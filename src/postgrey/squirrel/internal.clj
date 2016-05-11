@@ -1,33 +1,31 @@
 (ns postgrey.squirrel.internal
   (:require [clojure.string :as str]
-            [postgrey.squirrel.util :as u :refer [boolean?]])
+            [clojure.core.match :refer [match]]
+            [postgrey.squirrel.state :as s]
+            [postgrey.squirrel.util :as u :refer [boolean? s->]])
   (:import [clojure.lang Keyword])
   (:refer-clojure :exclude [cast]))
 
-(defprotocol Renderable
-  (render [self] [self params]
+(defprotocol Compile
+  (compile [self params]
     "Renders a query into a format suitable for passing to jdbc
-     args: [self] [self params]
-       if provided, params must be a map of binding name to value
+     args: [self params]
+       params is a map of bindings to values
      returns: [sql bindings-vec]"))
 
 (defrecord Literal [value])
 (defrecord Placeholder [name])
 
 (defrecord Query [sql params presets]
-  Renderable
-  (render [q]
-    (render q {}))
-  (render [q ps]
+  Compile
+  (compile [q ps]
     (let [ps' (merge presets ps)
-          pv (mapv (fn [name]
-                     (if-let [r (ps' name)]
-                       r
-                       (throw (ex-info (str "Missing parameter: " name) {:got ps :presets presets}))))
+          pv (mapv #(or (ps' %)
+                        (u/fatal "Missing parameter:" {:name % :got ps :presets presets}))
                    params)]
       [sql pv])))
 
-(declare expr from-item)
+(declare expr exprs from-item)
 
 (defn literal?
   "True if passed an instance of Literal
@@ -38,11 +36,12 @@
 
 (defn from-on
   "Generates the sql for an 'on' clause in a 'from'
-   args: [aliases expr]
+   args: [state expr]
    returns: sql string"
-  [aliases on]
-  (when-not (nil? on)
-    (str " on " (expr aliases on) " ")))
+  [state on]
+  (if (nil? on)
+    [state ""]
+    (update (expr state on) 1 #(str " on " % ))))
 
 (def ^:private join-cond-err
   "a join condition must be one of the following forms:
@@ -51,229 +50,219 @@
     [:using & cols] - conditional on these cols, which must exist in both tables!
     [:lateral expr]")
 
-(defn join-cond-vec
-  "Generates the sql for join conditions where the input is a vector
-   args: [aliases c]
+(defn join-cond
+  "Generates the sql for join conditions
+   args: [state c]
      c must take one of the following forms:
+       nil / default - unconditional
+       :natural - natural join tables (on all same-named cols in tables)
        [:on cond] - conditional join
-       [:using & cols] - join both tables on these (same-named in both tables) cols with ==
+       [:using col & cols] - join tables on these same-named columns.
+         every col must be a keyword and there must be at least one col
        [:lateral expr] - not yet implemented
-   returns: [aliases sql-string]"
-
-  [aliases c]
-  (case (first c)
-    :on      (if (= (count c) 2)
-               [aliases (expr aliases (nth c 1))]
-               (throw (ex-info join-cond-err {:got c})))
-    :using   (if (every? keyword? c)
-               (str " using ( " (str/join ", " (map u/kw->ident (rest c)))" ) ")
-               (throw (ex-info "using takes column arguments" {})))
-    :lateral (if (= (count c) 2)
-               (expr aliases (nth c 1))
-               (throw (ex-info "lateral takes a single expression argument" {:got c})))
-    (throw (ex-info join-cond-err {:got c}))))
-                    
-(defn join-cond [aliases c]
-  (cond (nil? c)       [aliases ""]
-        (= :natural c) [aliases " natural "]
-        (vector? c) (join-cond-vec aliases c)
-        :else       (throw (ex-info join-cond-err {:got c}))))
+   returns: [state sql-string]"
+  [state c]
+  (letfn [(ut [es] (and (next es) (every? keyword? es)))]
+    (match [c]
+      [nil]           [state nil]
+      [:natural]      [state " natural"]
+      ;; [[:lateral e]]  (expr state (nth c 1))
+      [[:on cond]]    (from-on state cond)
+      [[:using & (ks :guard ut)]] (let [ns (map u/kw->ident (rest c))]
+                                   [state (str " using (" (str/join "," ns ) ")")])
+      :else (u/fatal join-cond-err {:got c}))))
 
 (defn join
   "Returns the sql for a join from a vector describing it
-   args: [[:join dir t1 t2 & [on]]]
+   args: [[:join dir t1 t2 & [condition]]]
      dir: one of :left :right :inner :full
      t1, t2: table expression
+     condition must be one of:
+       nil / default - unconditional
+       :natural - natural join tables (on all same-named cols in tables)
+       [:on cond] - conditional join
+       [:using col & cols] - join tables on these same-named columns.
+         every col must be a keyword and there must be at least one col
+       [:lateral expr] - not yet implemented
    returns: sql string"
-  [aliases v]
-  (when (or (not (<= 4 (count v) 5))
-            (not= :join (first v)))
-    (throw (ex-info "Vectors are of the form `[:join :type :table1 :table2 & [on]]" {:got v})))
-  (let [[_ d t1 t2 & [on]] v]
-    (when-not (#{:left :right :inner :full} d)
-      (throw (ex-info "Invalid join type, must be one of :left :right :inner :full" {:got d})))
-    (let [[as2 t1_] (from-item aliases t1)
-          [as3 t2_] (from-item as2 t2)]
-      [(merge aliases as2 as3) (str " " t1_ " " (name d) " join " t2_ (from-on as3 on) " ")])))
+  [state v]
+  (let [types #{:left :right :inner :full}]
+    (match [v]
+      [([:join type t1 t2 & on] :seq)]
+      (if (types type)
+        (let [[as2 [t1_ t2_ on_]] (s-> state (from-item t1) (from-item t2) (from-on (first on)))]
+          [as2 (str " " t1_ " " (name type) " join " t2_ on_ " ")])
+        (u/fatal "Invalid join type, must be one of :left :right :inner :full." {:got type}))
+      :else (u/fatal "Vectors are of the form `[:join :type :table1 :table2 & [on]]" {:got v}))))
 
 (defn from-map
   "Returns the sql for an aliased from expression
-   args: [aliases v]
-   returns: [aliases v]"
-  [aliases m]
+   args: [state v]
+   returns: [state v]"
+  [state m]
   (when-not (seq m)
-    (throw (ex-info "Empty map not permitted as from item" {:got m})))
-  (letfn [(f [{:keys [aliases sql] :as acc}  k v]
-            ;; suspect when we come to implement lateral this will be changed
-            (when-not (keyword? k)
-              (throw (ex-info "Keys in a from item map must be keywords!" {:got k})))
-            (let [k2 (u/kw->ident k)
-                  [as2 sql2] (from-item aliases v)
-                  as3 (merge aliases as2)]
-              {:aliases (if (keyword? v)
-                          (->> (if (.endsWith ^String (name v) "<>")
-                                 ::none
-                                 v)
-                          (assoc as3 k))
-                          as3)
-               :sql (conj! sql (str " " sql2 " as " k2 " "))}))]
-    (let [init {:aliases {} :sql (transient [])}
-          {:keys [aliases sql]} (reduce-kv f init m)]
-      [aliases (str/join "," (persistent! sql))])))
-
-(defn from-vec
-  "Returns the sql for a from expression in the form of a vector
-   args: [aliases v]
-     v: vector: either [:only :table1] or [:join direction t1 t2 & [on]]"
-  [aliases v]
-  (when-not (seq v)
-    (throw (ex-info "a from vector must be either [:only :table1] or [:join direction t1 t2 & [on]]" {:got v})))
-  (let [[i & is] v]
-    (case i
-      :only (if (= (count v) 2)
-              [aliases (str " only " (u/kw->ident (nth v 1)) " ")]
-              (throw (ex-info "a from vector must be either [:only :table1] or [:join direction t1 t2 & [on]]" {:got v})))
-      :join (join aliases v)
-      :sample (throw (ex-info "Sorry, :sample/TABLESAMPLE is not yet implemented" {}))
-      (expr aliases v))))
+    (u/fatal "Empty map not permitted as from item" {:got m}))
+  (when-not (every? keyword? (keys m))
+    (u/fatal "Keys in a from item map must be keywords!" {:got (keys m)}))
+  (-> (fn [state [k v]]
+        (update (from-item state v) 1
+                #(str " " % " as " (u/kw->ident k) " ")))
+      (u/skeep state (seq m))
+      (update 1 #(str/join "," %))))
 
 (defn funcall
   "Returns a sql funcall expression: `my.function(*args)`
    true when expr is not null
    args: [args]
    returns: sql string"
-  [aliases fun args]
-  (str (u/kw->ident (u/kw-chop fun)) "( " (str/join ", " (map (partial expr aliases) args)) " )"))
+  [state fun args]
+  (let [n  (u/funkw->ident fun)
+        [st es] (u/smap expr state args)]
+    [st (str n "(" (str/join "," es) ")")]))
 
 (defn from-item
   "Returns the sql for a from expression
-   args: [aliases v & [query?]] type-dependent behaviour on v:
+   args: [state v & [query?]] type-dependent behaviour on v:
      keyword: names a table
-     map: aliases a table
-     vector: either [:only :table1] or [:join direction t1 t2 & [on]]
+     map: aliases one or more tables
+     vector: one of:
+       [:only :table] - ONLY modifier, excludes subtables when using inheritance
+       [:join direction t1 t2 & [on]] - join clause, see `join`
    if query? is true (default false), permits subqueries (not yet implemented)
    returns: string"
-  ([aliases v]
-   (from-item aliases v false))
-  ([aliases v query?]
-   (cond (literal? v) [aliases (:value v)]
-         (keyword? v) (if (.endsWith ^String (name v) "<>")
-                        [aliases (funcall aliases v [])]
-                        [aliases (u/kw->ident v)])
-         (map? v)     (from-map aliases v)
-         (vector? v)  (if (and query? (= :q (first v)))
-                        (throw (ex-info "Subqueries are not yet implemented. Sorry!" {}))
-                        (from-vec aliases v))
-         :else        [aliases (expr aliases v)])))
+  [state v]
+  (match [v]
+    [[:only t]]                [state (str " only " (u/kw->ident t) " ")]
+    [[:join & is]]             (join state v)
+    ;; [[:sample & ss]] (throw (ex-info "Sorry, :sample/TABLESAMPLE is not yet implemented" {}))
+    [(_ :guard literal?)]      [state (:value v)]
+    [(_ :guard map?)]          (from-map state v)
+    [(_ :guard u/fnish-kw? v)] (funcall state v [])
+    :else                      (expr state v)))
 
-(defn cast
-  "Returns a sql cast expression: `expr :: type`
-   args: [[expr type]]
-   returns: sql string"
-  [aliases args]
-  (when (not= 2 (count args))
-    (throw (ex-info ":cast takes exactly two arguments: [expr type]" {:got args})))
-  (str "( " (expr aliases (first args)) " :: " (expr aliases (second args)) " )"))
-
-(defn and*
-  "Returns a sql `and` expression: `expr1 and expr2 ... and exprN`
-   When there are zero arguments, true, otherwise true when all args are
-   args: [exprs]
-   returns: sql string"
-  [aliases args]
-  (if (= 0 (count args))
-    "true"
-    (str "( " (str/join " and " (map (partial expr aliases) args)) " )")))
-
-(defn or*
-  "Returns a sql `or` expression: `expr1 or expr2 ... or exprN`
+(defn logop
+  "Returns sql for a logical expression: `expr1 op expr2 ... op exprN`
    true when any expression returns true. 0 args = true.
-   args: [exprs]
-   returns: sql string"
-  [aliases args]
+   args: [state op args]
+   returns: [state sql]"
+  [state op args]
   (if (= 0 (count args))
-    "true"
-    (str "( " (str/join " or " (map (partial expr aliases) args)) " )")))
+    [state "true"]
+    (update (u/smap expr state args) 1
+            #(str "(" (str/join (str " " op " ") %) ")"))))
 
-(defn null?
-  "Returns a sql `is null` expression: `expr is null`
-   true when expr is null
-   args: [[expr]]
-   returns: sql string"
-  [aliases args]
-  (when (not= 1 (count args))
-    (throw (ex-info ":null? takes exactly one argument: expr" {:got args})))
-  (str "( " (expr aliases (first args)) " is null )"))
-
-(defn not-null?
-  "Returns a sql `is null` expression: `expr is not null`
-   true when expr is not null
-   args: [[expr]]
-   returns: sql string"
-  [aliases args]
-  (when (not= 1 (count args))
-    (throw (ex-info ":null? takes exactly one argument: expr" {:got args})))
-  (str "( " (expr aliases (first args)) " is not null )"))
-
-;; [:schema/func<> :arg1 :arg2]
-;; [:cast expr :type] ;; `::`
-;; [:and expr ...exprN]
-;; [:or expr ...exprN]
-;; [:not expr]
-;; [:!~]
-;; [:null? expr]
-;; [:not-null? expr]
+(defn postop
+  "Returns sql for a postfix operator (or operator-like)
+   args: [state op arg]
+     op: string, e.g. \"not null\"
+   returns: [state sql]"
+  [state op arg]
+  (update (expr state arg) 1
+          #(str % " " op)))
 
 (defn op
-  "An operator application (or operator-like)
-   If one arg, is assumed to be prefix unless it is specialcase
-   If multiple args, inserted between all exprs"
-  [aliases op args]
-  (if (= 1 (count args))
-    (str (name op) " " (expr aliases (first args)))
-    (str/join (str " " (name op) " ") (map (partial expr aliases) args))))
+  "Returns sql for an operator (or operator-like) application
+   If one arg, is assumed to be prefix
+   If multiple args, inserted between all exprs
+   args: [state op args]
+   returns: [state sql]"
+  [state op args]
+  (let [[st as] (u/smap expr state args)
+        op2 (u/kw->op op)]
+    (if (= 1 (count args))
+      [st (str op2 " " (first as))]
+      [st (str/join (str " " op2 " ") as)])))
 
-(defn expr-vec
+(defn expr-kw-vec
   ""
-  [aliases [opk & args]]
-  (case opk
-    :cast      (cast aliases args)
-    :and       (and* aliases args)
-    :or        (or* aliases args)
-    :null?     (null? aliases args)
-    :not-null? (not-null? aliases args)
-    (if (and (not= :<> opk) (.endsWith ^String (name opk) "<>"))
-      (funcall aliases opk args)
-      (op aliases opk args))))
+  [state kw args]
+  (if (u/fnish-kw? kw)
+    (funcall state kw args)
+    (op state kw args)))
+
+(defn expr-kw
+  ""
+  [state kw args]
+  (if (u/fnish-kw? kw)
+    (funcall state kw args)
+    [state (u/kw->ident kw)]))
 
 (defn expr
   "Returns the sql for an expression
-   args: [aliases expr]
+   args: [state expr]
    returns: sql string"
-  [aliases v]
-  (cond (or (u/boolean? v)
-            (integer? v)) (str v)
-        (literal? v)      (:value v)
-        (keyword? v)      (u/kw->ident v)
-        (vector? v)       (expr-vec aliases v)
-        :else             (throw (ex-info "Invalid expression" {:got v}))))
+  [state v]
+  (let [kw? keyword?]
+    (match [v]
+      [(_ :guard u/simple?)]  [state (str v)]
+      [(_ :guard literal?)]   [state (str (:value v))]
+      [(_ :guard kw?)]        (expr-kw state v [])
+      [[:cast e1 e2]]         (let [[st r] (expr state e1)]
+                                [st (str "(" r " :: " e2 ")")])
+      [[:and & args]]         (logop state "and" args)
+      [[:or & args]]          (logop state "or"  args)
+      [[:null? e]]            (postop state "is null" e)
+      [[:not-null? e]]        (postop state "is not null" e)
+      [[:<> & args]]          (op state :<> args)
+      [[(k :guard kw?) & as]] (expr-kw-vec state k as)
+      :else                   (u/fatal "Invalid expression" {:got v}))))
 
-;; TODO: unwritten
+(defn exprs
+  ""
+  [state es]
+  (update (u/smap expr state es) 1
+          #(str " " (str/join "," %) " ")))
+
 (defn group-by-vec [])
 (defn having-clause [])
-(defn windows [])
-(defn limit [])
-(defn offset [])
+
+(defn limit
+  ""
+  [state count]
+  [state (str "limit " count)])
+
+(defn offset
+  ""
+  [state count]
+  [state (str "offset " count)])
+
 (defrecord Param [name])
 
-(defn compile-select [{:keys [from where] :as qry}]
-  (let [from (from-item {} (:from qry))]
-    ;; where = expr
-    ))
-(defn compile-insert [qry])
-(defn compile-update [qry])
-(defn compile-delete [qry])
-(defn compile-query [{:keys [select insert update delete] :as qry}])
+;; (defn select-expr
+;;   [state e]
+;;   (if (map? e)
+;;     ...
+;;     (expr state e)))
+              
+;; (defn select-clause
+;;   "Returns the initial part of the select, i.e. the select itself
+;;    args: [state s]
+;;    returns: [state s]"
+;;   [state s]
+;;   (case s
+;;     :all      "select"
+;;     :distinct "select distinct"
+;;     (if (and (vector? s)
+;;              (= :distinct-on (first s))
+;;              (> (count s) 1))
+;;       (str "select distinct on (" (exprs state (rest s)) ")")
+;;       (throw (ex-info "a select clause must be one of the following forms:
+;;     :all - an ordinary (i.e. non-distinct) query
+;;     :distinct - select distinct
+;;     [:distinct-on & exprs]"
+;;                       {:got s})))))
+
+;; (defn compile-select [{:keys [select from where group-by having window
+;;                               union except order-by limit offset fetch for] :as qry}]
+;;   (let [[sql1 state1]  (select-clause empty-state select)
+;;         (if from
+;;           (let [[sql2 state2]
+          
+
+;; (defn compile-insert [qry])
+;; (defn compile-update [qry])
+;; (defn compile-delete [qry])
+;; (defn compile-query [{:keys [select insert update delete] :as qry}])
 
 ;; ;; select query
 ;; {:select

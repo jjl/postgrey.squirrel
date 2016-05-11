@@ -4,7 +4,8 @@
   :resource-paths #{"src"}
   :source-paths #{"src"}
   :dependencies '[[org.clojure/clojure    "1.8.0" :scope "provided"]
-                  [org.clojure/core.logic "0.8.10"]
+                  [org.clojure/core.match "0.3.0-alpha4"]
+                  [org.flatland/ordered   "1.5.3"]
                   [irresponsible/utrecht  "0.2.0" ]
                   [adzerk/boot-test       "1.1.1" :scope "test"]])
 
