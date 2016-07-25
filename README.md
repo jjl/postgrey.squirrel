@@ -1,4 +1,4 @@
- The irresponsible clojure organisation presents...
+ The Irresponsible Clojure Guild presents...
 
 # post-grey squirrel
 
@@ -53,6 +53,75 @@ attempt to lift it out of strings into the realm of clojure data.
   don't have to keep track of them later
 * With very few (documented and intuitive) exceptions, there is only
   one configuration to generate a particular query
+
+## Postgresql support
+
+Here's postgresql's select synopsis. Things we do not support are surrounded in <>
+If it is not inside <>, we support it. There are a few special cases noted underneath.
+
+```
+<[ WITH [ RECURSIVE ] with_query [, ...] ]>[1]
+SELECT [ ALL | DISTINCT [ ON ( expression [, ...] ) ] ]
+[ * | expression [ [ AS ] output_name ] [, ...] ]
+[ FROM from_item [, ...] ]
+[ WHERE condition ]
+[ GROUP BY grouping_element [, ...] ]
+[ HAVING condition [, ...] ]
+<[ WINDOW window_name AS ( window_definition ) [, ...] ]>[2]
+<[ { UNION | INTERSECT | EXCEPT } [ ALL | DISTINCT ] select ]>[3]
+[ ORDER BY expression [ ASC | DESC | USING operator ] [ NULLS { FIRST | LAST } ] [, ...] ]
+[ LIMIT { count | ALL } ]
+[ OFFSET start [ ROW | ROWS ] ]
+<[ FETCH { FIRST | NEXT } [ count ] { ROW | ROWS } ONLY ]>[4]
+[ FOR { UPDATE | NO KEY UPDATE | SHARE | KEY SHARE } [ OF table_name [, ...] ] [ NOWAIT | SKIP LOCKED ] [...] ]
+
+where from_item can be one of:
+
+[ ONLY ] table_name [ * ] [ [ AS ] alias <[ ( column_alias [, ...] ) ] >[5]]
+    <[ TABLESAMPLE sampling_method ( argument [, ...] ) [ REPEATABLE ( seed ) ] ]>[7]
+<[ LATERAL ]>[8] ( select ) [ AS ] alias [ ( column_alias [, ...] ) ]>[5]
+<with_query_name [ [ AS ] alias [ ( column_alias [, ...] ) ] ]>[8]
+
+<[ LATERAL ]>[8] function_name ( [ argument [, ...] ] )
+    <[ WITH ORDINALITY ]>[9] [ [ AS ] alias <[ ( column_alias [, ...] ) ] ]>[5]
+<[ LATERAL ]>[8] function_name ( [ argument [, ...] ] ) [ AS ] alias <( column_definition [, ...] )>[10]
+<[ LATERAL ]>[8] <function_name ( [ argument [, ...] ] ) AS ( column_definition [, ...] )>[10]
+<[ LATERAL ] <ROWS FROM( function_name ( [ argument [, ...] ] ) <[ AS ( column_definition [, ...] ) ] [, ...] )>[10]
+    <[ WITH ORDINALITY ]>[9] [ [ AS ] alias <[ ( column_alias [, ...] ) ] ]>[5]
+from_item [ NATURAL ] join_type from_item [ ON join_condition | USING ( join_column [, ...] ) ]
+
+and grouping_element can be one of:
+
+( )
+expression
+( expression [, ...] )
+ROLLUP ( { expression | ( expression [, ...] ) } [, ...] )
+CUBE ( { expression | ( expression [, ...] ) } [, ...] )
+GROUPING SETS ( grouping_element [, ...] )
+
+and with_query is:
+
+<with_query_name [ ( column_name [, ...] ) ] AS ( select | values | insert | update | delete )>[8]
+
+TABLE [ ONLY ] table_name <[ * ]>[15]
+```
+
+Notes:
+1  With statements are TODO
+2  Window functions are TODO. We don't properly understand them.
+3  Union/Intersect/Except are coming soon
+4  We don't support this because Limit/Offset are better
+5  Tablesample is TODO. It's a very expensive operation
+6  Column Aliases are coming soon
+7  LATERAL support is coming soon
+8  WITH queries are coming soon
+9  I have no idea what WITH ORDINALITY does, ergo it's low priority
+10 
+11
+12
+13
+14
+15
 
 ## Usage / Walkthrough
 
@@ -135,18 +204,7 @@ production quality is if brave people like you try me out and report bugs.
 
 ### cljs support
 
-cljs support is planned, but please bear in mind the security implications of generating sql in the brwoser and then executing it on the server side. cljs support is actually intended for those people daft enough to deploy webservices on node.
-
-### More sql support
-
-Coming very very soon:
-
-* LATERAL
-* Subselects
-
-Coming slightly less soon:
-
-* window functions
+cljs support is planned, but please bear in mind the security implications of generating sql in the browser and then executing it on the server side. cljs support is actually intended for those people daft enough to deploy webservices on node.
 
 ## Copyright and License
 

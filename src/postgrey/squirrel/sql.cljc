@@ -1,2 +1,0 @@
-(ns postgrey.squirrel.sql)
-

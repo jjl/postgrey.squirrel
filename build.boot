@@ -3,10 +3,11 @@
   :version "0.1.0"
   :resource-paths #{"src"}
   :source-paths #{"src"}
-  :dependencies '[[org.clojure/clojure    "1.8.0" :scope "provided"]
+  :dependencies '[[org.clojure/clojure    "1.9.0-alpha10" :scope "provided"]
                   [org.clojure/core.match "0.3.0-alpha4"]
                   [org.flatland/ordered   "1.5.3"]
-                  [irresponsible/utrecht  "0.2.0" ]
+                  [com.rpl/specter        "0.11.2"]
+                  [irresponsible/utrecht  "0.2.0" :scope "test"]
                   [adzerk/boot-test       "1.1.1" :scope "test"]])
 
 (require '[adzerk.boot-test :as t])
