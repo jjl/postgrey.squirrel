@@ -3,7 +3,7 @@
             [clojure.test :as t]))
 
 (t/deftest state-tests
-  (let [emp (s/make-empty-state)
+  (let [emp s/empty-state
         t1 (update emp :aliases conj ::test)
         t2 (update emp :placeholders conj ::foo)
         t3 (update t2  :aliases conj ::test)

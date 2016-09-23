@@ -3,11 +3,7 @@
             [flatland.ordered.set :as os]
             [postgrey.util :as u :refer [fatal]]))
 
-(defn make-empty-state
-  "Manufactures a state
-   args: []
-   returns: State"
-  []
+(def empty-state
   {:placeholders (os/ordered-set)
    :acc []
    :aliases (os/ordered-set)
@@ -24,8 +20,12 @@
   [st1 st2]
   (assoc st1 :aliases (:aliases st2)))
 
+(defn ok? [state]
+  (empty? (:errors state)))
+
 (defn good? [state]
-  (= [] (:errors state)))
+  (and (ok? state)
+       (empty? (:warnings state))))
 
 (defn append
   "Appends the given strings to the state accumulator

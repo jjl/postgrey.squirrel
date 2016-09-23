@@ -20,6 +20,11 @@
 
 ;; predicates
 
+(defn one-or-all [c]
+  (if (next c)
+    (first c)
+    c))
+
 (defn named?
   "true if the given argument is clojure.lang.Named
    args: [subj]
@@ -65,56 +70,71 @@
 
 ;; sql printers
 
-(defn repr-string [^String s]
-  (str \' (-> s (str/replace #"'" "''") (str/replace #"\x00" "")) \'))
+(defn repr-string [s]
+  (when (string? s)
+    (let [r (-> s (str/replace #"'" "''") (str/replace #"\x00" ""))]
+      (when (not= "" r)
+        (str \' r  \')))))
 
-(defn repr-atomic [^String s]
-  (str \" (-> s (str/replace #"\"" "\"\"") (str/replace #"\x00" "")) \"))
+(defn repr-atomic [s]
+  (when (string? s)
+    (let [r (-> s (str/replace #"\"" "\"\"") (str/replace #"\x00" ""))]
+      (when (not= "" r)
+        (str \" r \")))))
 
 (defn repr-qualified [k]
-  (let [ns (filter #(not= "" %)
-                 (-> k namespace (or "") undash unalunddot (str/split #"\.")))]
-    (->> k name repr-atomic
-         (conj (into [] (map repr-atomic ns)))
-         (str/join "."))))
+  (when (keyword? k)
+    (let [ns (filter #(not= "" %)
+                     (-> k namespace (or "") undash unalunddot (str/split #"\.")))
+          r (->> k name repr-atomic
+                 (conj (into [] (map repr-atomic ns)))
+                 (str/join "."))]
+    (when (not= "" r))
+      r)))
 
 (defn repr-wildcard [k]
-  (let [ns (filter #(not= "" %) (-> k namespace (or "") undash unalunddot (str/split #"\.")))
-        n  (name k)]
-    (->> (conj (into [] (map repr-atomic ns))
-               (if (= "*" n)
-                 "*"
-                 (repr-atomic n)))
-         (str/join "."))))
+  (when (keyword? k)
+    (let [ns (filter #(not= "" %) (-> k namespace (or "") undash unalunddot (str/split #"\.")))
+          n  (name k)
+          r  (->> (conj (into [] (map repr-atomic ns))
+                        (if (= "*" n)
+                          "*"
+                          (repr-atomic n)))
+                  (str/join "."))]
+      (when (not= "" r)
+        r))))
 
 (defn repr-symbol [s]
-  (-> s name (str/replace #"-" "_") (str/replace #"[^a-z_]" "")))
+  (when (symbol? s)
+    (let [r (-> s name (str/replace #"-" "_") (str/replace #"[^a-z_]" ""))]
+      (when (not= "" r)
+        r))))
 
-;; (defn state-form
-;;   ""
-;;   [sym f]
-;;   (cond (list? f) `(~(first f) ~sym ~@(rest f))
-;;         (fny? f)  (list f sym)
-;;         :else (throw (ex-info (str "Don't know what to do with " f) {:got f}))))
+(defn state-form
+  ""
+  [sym f]
+  (cond (list? f) `(~(first f) ~sym ~@(rest f))
+        (fny? f)  (list f sym)
+        :else (throw (ex-info (str "Don't know what to do with " f) {:got f}))))
 
-;; (defmacro s->
-;;   "[macro] Threads state through functions
-;;    args: [init & clauses]
-;;      init is the initial state value
-;;      clauses look like -> clauses, either functions or lists.
-;;      like ->, we insert the state into the second position
-;;    returns: [final-state returns]
-;;      returns is a vector of the return values in order of threading"
-;;   [init & clauses]
-;;   (if (seq clauses)
-;;     (let [sym `state#
-;;           ns (repeatedly (count clauses) #(gensym "r"))
-;;           binds (map (fn [r] [sym r]) ns)
-;;           forms (map #(state-form sym %) clauses)
-;;           lets (interleave binds forms)]
-;;       `(let [~sym ~init ~@lets]
-;;          [~sym [~@ns]]))
-;;     init))
+(defmacro s->
+  "[macro] Threads state through functions
+   args: [init & clauses]
+     init is the initial state value
+     clauses look like -> clauses, either functions or lists.
+     like ->, we insert the state into the second position
+   returns: [final-state returns]
+     returns is a vector of the return values in order of threading"
+  [init & clauses]
+  (if (seq clauses)
+    (let [sym `state#
+          ns (repeatedly (count clauses) #(gensym "r"))
+          binds (map (fn [r] [r sym]) ns)
+          forms (map #(state-form sym %) clauses)
+          lets (interleave binds forms)]
+      `(let [~sym ~init ~@lets]
+         [[~@ns] ~sym]))
+    init))
 
 ;; (defn smap
 ;;   ""
@@ -152,7 +172,7 @@
              (map (partition-all 2 clauses))))))
 
 (defmacro match->> [expr & clauses]
-  (let [name `match->#]
+  (let [name `gen#]
     `(as-> ~expr ~name
        ~@(-> #(match %
                 ([a] :seq)   (badarg "match-> takes an even number of clauses")
