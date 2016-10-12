@@ -5,6 +5,96 @@
             [clojure.core.match :refer [match]])
   (:import [clojure.lang Keyword]))
 
+;; ordered
+
+(defn ordered-set?
+  "true if given an ordered set
+   args: [s]
+   returns: bool"
+  [s]
+  (instance? flatland.ordered.set.OrderedSet s))
+
+(defn ordered-map?
+  "true if given an ordered map
+   args: [m]
+   returns: bool"
+  [m]
+  (instance? flatland.ordered.map.OrderedMap m))
+
+;; binding symbols
+
+(defn binding-symbol? [s]
+  (and (symbol? s)
+       (not= '? s)
+       (not (namespace s))
+       (.startsWith ^String (name s) "?")))
+
+(defn make-binding-symbol [s]
+  (symbol (str "?" (name s))))
+
+(defn no-ns? [v]
+  (not (namespace v)))
+
+(defn has-name? [v]
+  (not= "" (name v)))
+
+(def reserved-keywords
+  (into [(symbol "false") (symbol "true")]
+    '[all analyse analyze and any array as asc asymmetric authorization binary
+      both case cast check collate collation concurrently constraint create cross
+      current_catalog current_date current_role current_schema current_timestamp
+      current_user default deferrable desc distinct do else end except fetch for
+      foreign from full grant group having ilike in initially inner intersect
+      into is isnull join lateral leading left like limit localtime localtimestamp
+      natural not notnull null offset on only or order outer overlaps placing primary
+      references returning right select session_user similar some symmetric table
+      tablesample then to trailing union unique user using variadic verbose when
+      where window with]))
+
+(defn bracket [v]
+  (update v 0 #(str "(" % ")")))
+
+(defn maybe-bracket
+  "if bracket?, wrap val in parens
+   args: [val bracket?]
+     val: string
+     bracket?: bool
+   return: string"
+  [val bracket?]
+  (if bracket?
+    (bracket val)
+    val))
+
+(defn render-string
+  "Renders a string with the given delimiter, using doubling for escape
+   args: [str delim]
+     str: the string to render
+     delim: the string delimiter, should be a character or length-1 string
+   returns: string"
+  [string delim]
+  (str delim (.replaceAll ^String string (str delim) (str delim delim)) delim))
+
+(defn render-ident
+  "An ident is a keyword or a symbol. Renders it using the namespace
+   if any as part of the output
+   args: v"
+  [v]
+  (let [nss (str/split (or (namespace v) "") #"\.")]
+    (->> (conj nss (name v))
+         (into [] (comp (filter #(not= "" %)) (map #(render-string % \"))))
+         (str/join "."))))
+
+(defn undashed-name [val]
+  (str/replace (name val) \- \space))
+
+;; hierarchy manip
+
+(defn leaf-descendants
+  "Returns only the leaf descendants of tag from the global hierarchy"
+  [tag]
+  (->> tag descendants
+       (into #{} (filter #(not (seq (descendants %)))))))
+
 ;; throwing errors
 
 (defn fatal
@@ -12,7 +102,7 @@
    args: [msg data]
    returns: nothing, throws!"
   [msg data]
-  (throw (ex-info (str msg " " (pr-str data)) data)))
+  (throw (ex-info (str msg \newline " " (pr-str data)) data)))
 
 (defn badarg [msg]
   #?(:clj (throw (IllegalArgumentException. msg))
@@ -186,12 +276,6 @@
                                      :else (list b name))
                                   :else ~name)))
              (map (partition-all 2 clauses))))))
-
-(defn ordered-set? [s]
-  (instance? flatland.ordered.set.OrderedSet s))
-
-(defn ordered-map? [m]
-  (instance? flatland.ordered.map.OrderedMap m))
 
 (def sorted-map? (every-pred map? sorted?))
 

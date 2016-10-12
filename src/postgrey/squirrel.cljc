@@ -54,7 +54,7 @@
 ;; :foo :foo/bar ;; keywords are references
 ;; 'current_timestamp ;; symbols are keywords
 ;; 
-;; 
+;; "
 ;; 
 ;; 
 ;; 
