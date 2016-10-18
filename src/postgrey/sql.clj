@@ -3,6 +3,7 @@
             [clojure.string :as str]
             [clojure.set :as set]
             [clojure.spec :as s]
+            [clojure.spec.gen :as g]
             [flatland.ordered.set :as os]
             [postgrey.spec :as ss]
             [postgrey.util :as u :refer [render-string fatal]]))
@@ -20,67 +21,57 @@
 ;;; ## Diving in
 ;;;
 ;;; `> (require '[postgrey.sql :as sql])`
+;; (generate ::select-query
+;;           '{:verb :select
+;;             :with [[recursive :foo [:a :b] {:verb :select :select [:foo :bar]}]]
+;;             :select [[as :foo :id] :bar/*] :distinct distinct
+;;             :from [join left
+;;                     [table :foo only as :bar [:baz] sample bernoulli [1.0] seed 4.56]
+;;                     [join cross
+;;                       [with :foo as :bar [:baz]]
+;;                       [join right
+;;                         [select lateral {:verb :select :select [123]} as :bar [:baz]]
+;;                         (funcall with-ordinality :foo [] as :bar [:baz])
+;;                         [using :a :b]]
+;;                       [using :a :b]]
+;;                     [using :a :b]]
+;;             :where [free :a = ?foo] :having [[free [funcall count :a] > 3]]
+;;             :window [[frame unbounded-preceding unbounded-following]]
+;;             :set-op [intersect distinct {:verb :select :select [:foo :bar]}]
+;;             :group-by [[grouping-sets :a [rollup :a :b.c] [cube :d :e]
+;;                         [grouping-sets [cube :a.b] :c.d]]]
+;;             :order-by [[[funcall avg :b] asc nulls-first]
+;;                        [[funcall stdev :b] desc nulls-last]]
+;;             :limit 10 :offset 20
+;;             :for [no-key-update of :a :b nowait]}
+;;           (new-state))
+;; (generate ::select '[[as :foo :id] :bar/*] [])
+;; (generate ::with.item '[recursive :foo [:a :b] {:verb :select :select [:foo :bar]}] [])
 
+;; (generate ::from '[join left
+;;                     [table :foo only as :bar [:baz] sample bernoulli [1.0] seed 4.56]
+;;                     [join cross
+;;                       [with :foo as :bar [:baz]]
+;;                       [join right
+;;                         [select lateral {:verb :select :select [123]} as :bar [:baz]]
+;;                         (funcall with-ordinality :foo [] as :bar [:baz])
+;;                         [using :a :b]]
+;;                       [using :a :b]]
+;;                     [using :a :b]] [])
+
+;; (clojure.pprint/pprint (s/exercise ::select-query))
+;; (s/exercise ::select-query)
+(defmacro named [& names]
+  (into #{} (mapcat (fn [v] `['~v '~(symbol "postgrey.sql" (name v))])) names))
 (defmacro some-spec [& ss]
   `(s/or ~@(mapcat (fn [v] [v v]) ss)))
-(s/def ::nil nil?)
-(s/def ::int integer?)
-(s/def ::bool boolean?)
-(s/def ::float float?)
-(s/def ::string string?)
-(s/def ::ident (s/and keyword? #(not= "*" (name %))))
-(s/def ::identy (some-fn #(s/valid? ::ident %) symbol?))
-(s/def ::ident-atom  (s/and ::ident u/no-ns?))
-(derive ::ident-atom ::ident)
-(s/def ::binding  u/binding-symbol?)
-(s/def ::magic    symbol?)
-(s/def ::wild-kw  (s/and keyword? #(= "*" (name %))))
-(s/def ::function-name ::ident)
-(s/def ::funcall    (s/cat :isa #{'funcall `funcall} :fun ::identy :args (s/* ::expr)))
-(s/def ::free       (s/cat :isa #{'free `free} :exprs (s/+ ::expr)))
-(s/def ::literal    (s/cat :isa #{'literal `literal} :literal string?))
-(s/def ::alias      (s/cat :isa #{'as `as} :name ::ident-atom :expr any?))
-(s/def ::verb       #{:select :insert :update :delete :table :values})
-(defmulti query-type (fn [v & _] (:verb v)))
-(s/def ::query      (s/multi-spec query-type :query/type))
-(s/def ::expr       (s/or :int ::int :bool ::bool :float ::float :string ::string :ident ::ident
-                          :binding ::binding :magic ::magic :wild-kw ::wild-kw :funcall ::funcall
-                          :free ::free :literal ::literal))
-(defmethod query-type :select [_]
-  (s/keys :req-un [::verb ::select]
-          :opt-un [::with ::from ::where ::window ::set-op
-                   ::group-by ::order-by ::limit ::for]))
 
-(s/conform ::query {:verb :select
-                    :with '[[recursive :foo [:a :b] select {:select [:foo :bar]}]]
-                    :select [['as :foo :id] :bar/*] :distinct true
-                    :from '[join left
-                            [table :foo only as :bar [:baz] sample bernoulli [1.0] seed 4.56]
-                            [join cross
-                             [with :foo as :bar [:baz]]
-                             [join right
-                              (select lateral {} as :bar [:baz])
-                              (funcall with-ordinality :foo [] as :bar [:baz])
-                              [using :a :b]]
-                             [using :a :b]]
-                            [using :a :b]]
-                    :where '[free :a = ?foo] :having '[[free [funcall count :a] > 3]]
-                    :window []
-                    :set-op '[intersect distinct {:select [:foo :bar]}]
-                    :group-by '[[grouping-sets :a [rollup :a :b.c] [cube :d :e]
-                                 [grouping-sets [cube :a.b] :c.d]]]
-                    :order-by [['[funcall avg :b] 'asc 'nulls-first]
-                               ['[funcall stdev :b] 'desc 'nulls-last]]
-                    :limit 10 :offset 20
-                    :for '[no-key-update of :a :b nowait]})
-  
-;;; ints: 123, 456
-;;; floats: 1.23, 4e5
-;;; strings: "", "abc"
-;;; identifiers: :foo, :foo/bar
-;;; placeholder names: '?foo '?bar
-;;; magic symbols: foo bar
+;;; needed for state
 
+(s/def ::binding  (s/with-gen (s/and symbol? u/binding-symbol?)
+                    #(g/fmap u/make-binding-symbol (g/symbol))))
+
+;;; The state object simply contains a collection of bindings
 (s/def ::bindings (s/coll-of ::binding :kind u/ordered-set?))
 (s/def ::state (s/keys :req-un [::bindings]))
 
@@ -110,353 +101,304 @@
        :else
         (update state :bindings conj name)))
 
-;; (s/fdef try-place
-;;   :args (s/cat :name ::binding :state ::state)
-;;   :ret (s/cat :val string? :state ::state))
-
 ;;; `build` is the core multimethod that deals with building up some sql
 ;;; its first argument is a keyword, on which it is dispatched. it should
 ;;; be a keyword naming a valid spec (e.g. :postgrey.sql/::expr)
 
 (defmulti build
   "turns data into sql
-   ex: (build {::sql/type ::sql/int ::sql/value 123} (sql/new-state))
-       ;; => [\"123\" state]
-   args: [type data state & args]
+   ex: (build ::sql/int 123 (sql/new-state)) ;; => [\"123\" state]
+   args: [type data state]
      data:  a map with a ::sql/type key
      state: a state map
-     args: optional arguments
    dispatch value: type
    returns: [sql state]
      sql: string of sql
      state: a new state"
-  (fn [type _ _ & _] type))
-
-;; (s/fdef build
-;;   :args (s/cat :spec ::spec :val any? :state ::state :args (s/* any?))
-;;   :ret (s/cat :string string? :state ::state))
+  (fn [type _ _] type))
+(defmethod build ::binding [_ v st] ["?" (try-place v st)])
 
 (defn map-build
   "Builds each item in coll
    args: [spec coll st & args]
    returns: [sqls state]"
-  [spec coll st & args]
+  [spec coll st]
   (reduce (fn [[acc st] v]
-            (let [[r st1] (apply build spec v st args)]
+            (let [[r st1] (build spec v st)]
               [(conj acc r) st1]))
           [[] st] coll))
-
-;; (s/fdef map-build
-;;   :args (s/cat :spec ::spec :val any? :state ::state :args (s/* any?))
-;;   :ret  (s/cat :sql (s/coll-of string?) :state ::state))
 
 (defn join-build
   "Builds each item in coll and joins the result together with sep
    args: [spec coll st sep & args]
    returns: [sql state]"
-  [spec coll st sep & args]
-  (update (apply map-build spec coll st args) 0
+  [spec coll st sep]
+  (update (map-build spec coll st) 0
           #(str/join sep %)))
 
-;; (s/fdef join-build
-;;   :args (s/cat :spec ::spec :val any? :state ::state :sep string? :args (s/* any?))
-;;   :ret  (s/cat :sql ::string :state ::state))
+(defn build-some [[k v] st]
+  (build k v st))
 
-;;; build-some is a utility for automatically building whichever child
-;;; matches in a `some-spec`-based spec
+(defn map-some [coll st]
+  (reduce (fn [[acc st] v]
+            (let [[r st1] (build-some v st)]
+              [(conj acc r) st1]))
+          [[] st] coll))
 
-(defn build-some
-  "Conforms a `some` spec and builds it
-   args: [spec val state]
-     spec: must be a spec defined by `some-spec`
-   returns: [sql state]"
-  [spec val st & args]
-  (let [[t v2] (ss/conform! spec val)]
-    (apply build t v2 st args)))
+(defn join-some [coll st sep]
+  (update (map-some coll st) 0
+          #(str/join sep %)))
 
-;; ;; (s/fdef build-some
-;; ;;   :args (s/cat :spec ::spec :val any? :state ::state :args (s/* any?))
-;; ;;   :ret  (s/cat :sql ::string :state ::state))
+(defn make-join-build [sep]
+  (fn [spec coll st]
+    (join-build spec coll st sep)))
 
-;; (defn build-some-coll
-;;   "Conforms a collection and then builds each element
-;;    args: [spec val state]
-;;      spec: must be a `coll-of` spec of an `or` spec
-;;    returns: [sqls state]"
-;;   [spec val st & args]
-;;   (let [v (ss/conform! spec val)]
-;;     (reduce (fn [[acc st] [t1 v1]]
-;;               (let [[r st2] (apply build t1 v1 st args)]
-;;                 [(conj acc r) st2]))
-;;             [[] st] v)))
+(defn make-join-some [sep]
+  (fn [coll st]
+    (join-some coll st sep)))
 
-;; (s/fdef build-some-coll
-;;   :args (s/cat :spec ::spec :val coll? :state ::state :args (s/* any?))
-;;   :ret  (s/cat :sql (s/coll-of ::string) :state ::state))
+(def comma-build (make-join-build ","))
+(def space-build (make-join-build " "))
+(def paren-comma-build (comp u/bracket comma-build))
+(def paren-space-build (comp u/bracket space-build))
+(def comma-some (make-join-some ","))
+(def space-some (make-join-some " "))
+(def paren-comma-some (comp u/bracket comma-some))
+(def paren-space-some (comp u/bracket space-some))
 
+;;; simple data
+
+(s/def ::nil nil?)
+(s/def ::int integer?)
+(s/def ::bool boolean?)
+(s/def ::float float?)
+(s/def ::string string?)
 (defmethod build ::nil     [_ _ st] ["null" st])
 (defmethod build ::int     [_ v st] [(str v) st])
 (defmethod build ::bool    [_ v st] [(str v) st])
 (defmethod build ::float   [_ v st] [(str v) st])
 (defmethod build ::string  [_ v st] [(u/render-string v \') st])
+
+;;; a keyword is an identifier if its name is not '*'
+;;; if it has a namespace, it is split at '.' and each piece becomes a prefix
+
+(s/def ::ident (s/and keyword? #(not= "*" (name %))))
 (defmethod build ::ident   [_ v st] [(u/render-ident v) st])
-(defmethod build ::identy  [_ v st] [(if (symbol? v) (str v) (u/render-ident v)) st])
-(defmethod build ::binding [_ v st] ["?" (try-place v st)])
-(defmethod build ::magic   [_ v st] [(str v) st])
-(defmethod build ::wild-kw [_ v st]
-  (let [qualis (->> (-> (or (namespace v) "")
-                        (str/split #"\."))
-                    (into [] (comp (filter #(not= "" %))
-                                   (map #(u/render-string % \"))))
-                    (str/join "."))]
-    [(if (= "" qualis)
-      "*"
-      (str qualis ".*"))
-     st]))
 
-(defmethod build ::free [_ v st]
-  (u/bracket (join-build ::expr (rest v) st " " false)))
-  
-(defmethod build ::identy [_ v st]
-  [(if (symbol? v)
-     (str v)
-     (u/render-ident v))
-   st])
+;;; a nonbinding is a symbol whos name does not begin with '?'
+;;; assuming it gets as far as printing, its name is printed as a string
 
-(defmethod build ::funcall [_ v st] 
-  (let [{:keys [fun args]} (ss/conform! ::funcall v)
-        [fun  st1] (build ::identy fun st)
-        [args st2] (join-build ::expr args st1 ", ")]
-    [(str fun "(" args ")") st2]))
+(s/def ::nonbinding (s/and symbol? #(not (u/binding-symbol? %))))
+(defmethod build ::nonbinding [_ v st] [(name v) st])
 
-(defmethod build ::free [_ {:keys [exprs]} st]
-  (join-build ::free.item exprs st " "))
+;;; an identy allows a keyword identifier or a nonbinding
 
-(defmethod build ::alias
-  [_ {:keys [name expr]} st spec & args]
+(s/def ::identy (some-spec ::ident ::nonbinding))
+(defmethod build ::identy  [_ v st] (build-some v st))
+
+;;; an ident-atom is a keyword with no namespace
+
+(s/def ::ident-atom  (s/with-gen (s/and ::ident u/no-ns?) g/keyword))
+(derive ::ident-atom ::ident) ;; free implementation!
+
+;;; a wild keyword's name is '*' and it signifies a wildcard
+;;; prefix expansion is done as per ::ident
+
+(s/def ::wild-kw (s/with-gen (s/and keyword? #(= "*" (name %)))
+                   (fn [] (g/fmap #(keyword (name %) "*") (g/symbol)))))
+(defmethod build ::wild-kw [_ v st] [(u/render-wildcard v) st])
+
+;;; a literal is an escape hatch to insert literal sql
+;;; hopefully you won't need it
+
+(s/def ::literal (s/cat :isa (named literal) :literal string?))
+(defmethod build ::literal [_ {:keys [literal]} st] [literal st])
+
+;;; free is how you do operator application, it's pretty free-form
+
+(s/def ::free (s/cat :isa (named free) :exprs (s/+ ::expr)))
+(defmethod build ::free    [_ {:keys [exprs]} st] (paren-space-some exprs st))
+
+;;; function_name ( expr* )
+
+(s/def ::funcall    (s/cat :isa (named funcall) :fun ::identy :args (s/* ::expr)))
+(defmethod build ::funcall [_ {:keys [fun args]} st] 
+  (let [[fun  st1] (build ::identy fun st)
+        [args st2] (paren-comma-some args st1)]
+    [(str fun args) st2]))
+
+;;; expr AS name
+
+(s/def ::alias      (s/cat :isa (named as) :name ::ident-atom :expr ::expr))
+(defmethod build ::alias [_ {:keys [name expr]} st]
   (let [[n st1] (build ::ident-atom name st)
-        [e st2] (apply build spec expr st1 args)]
+        [e st2] (build ::expr expr st1)]
     [(str n " as " e) st2]))
 
-(defn expr-type [v]
-  (-> [::nil ::int ::bool ::float ::ident ::binding ::funcall ::wild-kw ::magic ::free]
-      (ss/some-spec v)))
+;;; expressions are many things. expr+ is an expression or an alias
 
-(defmethod build ::expr [_ v st & [bracket?]]
-  (if-let [s (expr-type v)]
-    (u/maybe-bracket (build s v st) (if (boolean? bracket?) bracket? false))
-    (u/fatal "Expected expression" {:got v :expr-type (expr-type v)})))
+(s/def ::expr (some-spec ::int ::bool ::float ::string ::binding ::ident
+                         ::magic ::wild-kw ::funcall ::free ::literal))
+(s/def ::expr+ (some-spec ::alias ::int ::bool ::float ::string ::binding ::ident
+                          ::magic ::wild-kw ::funcall ::free ::literal))
+(defmethod build ::expr  [_ v st] (build-some v st))
+(defmethod build ::expr+ [_ v st] (build-some v st))
 
-(defmulti build-query (fn [v & _] (:verb v)))
+;;; LIMIT count
 
-(defmethod build ::query [_ v st & [valid]]
-  (build-query (ss/conform! ::query v) st))
+(s/def ::limit  (s/and integer? pos?))
+(defmethod build ::limit [_ v st] [(u/prefix "limit"  (str v)) st])
 
-(s/def ::distinct-on (s/cat :isa #{'on} :exprs (s/+ any?)))
+;;; OFFSET count
 
-;;; DISTINCT / DISTINCT ON (expr...)
-;;; (build ::distinct ['on :a] nil)
-;;; (build ::distinct true nil)
-(defmethod build ::distinct
-  [_ v st]
-  (cond (nil? v) ["" st]
-        (true? v) ["distinct" st]
-        :else (let [r (ss/conform! ::distinct-on v)]
-                (update (join-build ::expr (:exprs r) st ", " false) 0
-                        #(str "distinct on (" % ")")))))
-
+(s/def ::offset (s/and integer? pos?))
+(defmethod build ::offset [_ v st] [(u/prefix "offset" (str v)) st])
 
 ;;; WHERE expr
-;;; (build ::where true nil) 
-(defmethod build ::where [_ v st]
-  (if (nil? v)
-    ["" st]
-    (update (build ::expr v st false) 0
-            #(str "where " %))))
 
-;;; HAVING expr...
-(defmethod build ::having [_ v st]
-  (if (nil? v)
-    ["" st]
-    (update (join-build ::expr v st ", " false) 0
-            #(str "having " %))))
+(s/def ::where ::expr)
+(defmethod build ::where  [_ v st] (u/prefix "where"  (build-some v st)))
 
-;;; GROUP BY
-(s/def ::group-by.rollup (s/cat :op '#{rollup} :exprs (s/+ ::expr)))
-(s/def ::group-by.cube   (s/cat :op '#{cube}   :exprs (s/+ ::expr)))
-(s/def ::group-by.sets   (s/cat :op '#{grouping-sets} :sets (s/+ ::group-by.elem)))
-(s/def ::group-by.elem (some-spec ::group-by.rollup ::group-by.cube ::group-by.sets ::expr))
-(s/def ::group-by (s/coll-of ::group-by.elem))
+;;; HAVING expr+
 
-(defmethod build ::group-by.rollup [_ {:keys [exprs]} st]
-  (update (join-build ::expr exprs st ", " false)
-          0 #(str "rollup (" % ")")))
+(s/def ::having ::expr)
+(defmethod build ::having [_ v st] (u/prefix "having" (comma-some v st)))
 
-(defmethod build ::group-by.cube [_ {:keys [exprs]} st]
-  (update (join-build ::expr exprs st ", " false)
-          0 #(str "cube (" % ")")))
+;;; SELECT fields
 
-(defmethod build ::group-by.sets [_ {:keys [sets]} st]
-  (let [sets1 (map #(s/unform ::group-by.elem %) sets)]
-    (update (join-build ::group-by.elem sets1 st ", ")
-            0 #(str "grouping sets (" % ")"))))
+(s/def ::select (s/coll-of ::expr+ :into [] :min-count 1))
+(defmethod build ::select [_ v st] (comma-some v st))
 
-(defmethod build ::group-by.elem
-  [_ v st]
-  (build-some ::group-by.elem v st))
+;;; DISTINCT / DISTINCT-ON
 
-(defmethod build ::group-by
-  [_ v st]
-  (if v
-    (update (join-build ::group-by.elem v st ", ") 0 #(str "group by " %))
-    ["" st]))
+(s/def ::distinct-on (s/cat :isa (named on) :exprs (s/+ ::expr)))
+(s/def ::distinct    (s/or :distinct (named distinct) :distinct-on ::distinct-on))
+(defmethod build ::distinct [_ v st]
+  (match v
+    [:distinct-on {:exprs exprs}] (u/prefix "select distinct on" (paren-comma-some exprs st))
+    :else ["select distinct" st]))
 
-;; a field selector. might be an alias
-;; debugging output could be better from this - we use expr to error out
+;;; GROUP BY grouping_elem
 
-(defmethod build ::field
-  [_ v st]
-  (let [r (s/conform ::alias v)]
-    (if (= ::s/invalid r)
-      (build ::expr v st)
-      (build ::alias r st ::expr false))))
-          
-;;; Field list, e.g. foo, bar.*
-;;; (build ::fields [123 456] nil)
+(s/def ::group-by.rollup (s/cat :op (named rollup)        :exprs (s/+ ::expr)))
+(s/def ::group-by.cube   (s/cat :op (named cube)          :exprs (s/+ ::expr)))
+(s/def ::group-by.sets   (s/cat :op (named grouping-sets) :elems  (s/+ ::group-by.elem)))
+(s/def ::group-by.elem   (some-spec ::group-by.rollup ::group-by.cube ::group-by.sets ::expr))
+(s/def ::group-by        (s/coll-of ::group-by.elem))
+(defmethod build ::group-by.rollup [_ {:keys [exprs]} st] (u/prefix "rollup"        (paren-comma-some exprs st)))
+(defmethod build ::group-by.cube   [_ {:keys [exprs]} st] (u/prefix "cube"          (paren-comma-some exprs st)))
+(defmethod build ::group-by.sets   [_ {:keys [elems]} st] (u/prefix "grouping sets" (paren-comma-some elems st)))
+(defmethod build ::group-by        [_ v st] (u/prefix "group by" (comma-some v st)))
 
-(defmethod build ::fields
-  [_ v st]
-  (join-build ::field v st ", "))
+;;; ORDER BY order_item
 
-(defmethod build ::limit
-  [_ v st]
-  (cond (nil? v) ["" st]
-        (not (and (integer? v) (< 0 v)))
-        (u/fatal "Limit must be a positive integer" {:got v})
-        :else [(str "limit " v) st]))
+(s/def ::order (s/or :simple (named asc desc) :complex (s/cat :using (named using) :op symbol?)))
+(defmethod build ::order [_ v st]
+  (match v
+    [:simple s]         [(name v) st]
+    [:complex {:op op}] [(str "using " (name op)) st]))
 
-(defmethod build ::offset
-  [_ v st]
-  (cond (nil? v) ["" st]
-        (not (and (integer? v) (< 0 v)))
-        (u/fatal "Offset must be a positive integer" {:got v})
-        :else [(str "offset " v) st]))
+(s/def ::order-by.item (s/cat :expr ::expr :order ::order :nulls (s/? (named nulls-first nulls-last))))
+(defmethod build ::order-by.item [_ {:keys [expr order nulls]} st]
+  (let [[e st1] (build-some expr st)
+        [o st2] (build ::order order st1)
+        n (if nulls (u/undashed-name nulls) "")]
+    [(str/join " " [e o n]) st2]))
 
-(s/def ::order (some-fn #{'asc 'desc `asc `desc}
-                        #(and (sequential? %) (#{'using `using} (first %)) (symbol? (second %)))))
-(s/def ::nulls #{'nulls-first 'nulls-last `nulls-first `nulls-last})
-(s/def ::order-by.item (s/cat :expr ::expr :order ::order :nulls (s/? ::nulls)))
 (s/def ::order-by (s/coll-of ::order-by.item))
+(defmethod build ::order-by [_ v st] (u/prefix "order-by" (comma-some v st)))
 
-(defmethod build ::order
-  [_ v st]
-  (if (symbol? v)
-    [(name v) st]
-    (match v
-      (_ :guard symbol?) [(name v) st]
-      (['using id] :seq) [(str "using " id) st]
-      :else (u/fatal "expected one of 'asc, 'desc, ['using operator]" {:got v}))))
+;;; FOR lock_strength ( OF table ) ( NOWAIT | SKIP LOCKED )
 
-(defmethod build ::order-by.item
-  [_ v st]
-  (let [{:keys [expr order nulls]} (ss/conform! ::order-by.item v)
-        [e st1] (build ::expr  expr  st false)
-        o (if (symbol? order) (name order)
-              (->> order second name (str "using ")))
-        n (if nulls (str/replace (name v) \- \space))]
-    [(str/join " " [e o n]) st1]))
+(s/def ::for.strength (named update no-key-update share key-share))
+(s/def ::for.of (s/cat :of (named of) :idents (s/+ ::ident)))
+(s/def ::for (s/cat :strength ::for.strength :of (s/? ::for.of) :wait (s/? (named nowait skip-locked))))
 
-(defmethod build ::order-by
-  [_ v st]
-  (if v
-    (update (join-build ::order-by.item v st ", ") 0 #(str "order by " %))
-    ["" st]))
-
-(s/def ::for.strength '#{update no-key-update share key-share})
-(s/def ::for.wait (some-fn nil? #{'nowait 'skip-locked}))
-(s/def ::for.of (s/cat :of #{'of} :idents (s/+ ::ident)))
-(s/def ::for (s/cat :strength ::for.strength :of (s/? ::for.of) :wait (s/? ::for.wait)))
-
-(defmethod build ::for
-  [_ v st]
+(defmethod build ::for [_ {:keys [strength of wait]} st]
   (letfn [(prn-of [of]
             (if (seq (:idents of))
               (str "of " (str/join ", " (map u/render-ident (:idents of))))
               ""))]
-    (if (empty? v) ["" st]
-      (let [{:keys [strength of wait]} (ss/conform! ::for v)
-            strength (u/undashed-name (str strength))
-            of (prn-of of)
-            wait (if wait (u/undashed-name (str wait)) "")]
-        [(str/join " " ["for" strength of wait]) st]))))
+    (let [strength (u/undashed-name (str strength))
+          of (prn-of of)
+          wait (if wait (u/undashed-name (str wait)) "")]
+      [(str/join " " ["for" strength of wait]) st])))
 
-(s/def ::set-op (s/cat :op '#{union intersect except}
-                       :distinctness '#{all distinct} :query map?))
+;;; ( UNION | INTERSECT | EXCEPT ) ( ALL | DISTINCT ) select_query
 
-(defmethod build ::set-op
-  [_ v st]
-  (if v
-    (let [{:keys [op distinctness query]} (ss/conform! ::set-op v)
-          distinct (if distinctness (str distinctness " ") "")]
-      (update (build ::query ['select query] st) 0
-              #(str op " " distinct %)))
-    ["" st]))
+(s/def ::set-op (s/cat :op (named union intersect except)
+                       :distinctness (named all distinct) :query ::select-query))
+(defmethod build ::set-op [_ {:keys [op distinctness query]} st]
+  (let [distinct (if distinctness (str (name distinctness) " ") "")]
+    (u/prefix (str (name op) " " distinct)
+            (build ::select-query query))))
 
-(s/def ::with.item (s/cat :recursive? (s/? '#{recursive})
+;;; WITH ( RECURSIVE ) ? query_name ( id+ ) ? with_query
+
+(s/def ::with.item (s/cat :recursive? (s/? (named recursive))
                           :name ::ident-atom
                           :args (s/? (s/coll-of ::ident-atom :type vector?))
-                          :verb '#{select insert update delete values table}
-                          :query map?))
-
-(s/def ::with (s/coll-of ::with.item))
-
-(defmethod build ::with.item
-  [_ v st]
-  (let [{:keys [recursive? name args verb query]} (ss/conform! ::with.item v)
-        rec (if recursive? "recursive " "")
-        [args st1] (if (seq args)
-                     (u/bracket (join-build ::ident args st ", "))
-                     ["" st])
-        [q    st2] (build ::query [verb query] st1)]
+                          :query ::with-query))
+(defmethod build ::with.item [_ {:keys [recursive? name args verb query]} st]
+  (let [rec (if recursive? "recursive " "")
+        [args st1] (if (seq args) (paren-comma-build ::ident args st) ["" st])
+        [q    st2] (build ::with-query [verb query] st1)]
     [(str rec args " as (" q ")") st2]))
 
-(defmethod build ::with [_ v st]
-  (if (seq v)
-    (update (join-build ::with.item v st ", ") 0 #(str "with " %))
-    ["" st]))
+(s/def ::with (s/coll-of ::with.item))
+(defmethod build ::with [_ v st] (u/prefix "with" (build-some v st)))
 
-(s/conform ::from '(join left
-                         (table :foo only as :bar [:baz] sample bernoulli [1.0] seed 4.56)
-                         (join cross
-                               (with :foo as :bar [:baz])
-                               (join right
-                                     (select lateral {} as :bar [:baz])
-                                     (funcall with-ordinality :foo [] as :bar [:baz])
-                                     [using :a :b])
-                               [using :a :b])
-                         [using :a :b]))
 (s/def ::column-aliases (s/coll-of ::ident-atom :kind vector?))
+(s/def ::alias+cols? (s/cat :op (named as) :name ::ident-atom :col-aliases (s/? ::column-aliases)))
+
+;;; TABLESAMPLE sampling_method ( float+ ) ( REPEATABLE seed ) ?
+
 (s/def ::sample.args    (s/coll-of ::float :kind vector? :min-count 1))
-(s/def ::sample.seed    (s/cat :op #{'seed `seed} :val float?))
-(s/def ::sample         (s/cat :op #{'sample `sample} :method symbol?
-                               :args (s/? ::sample.args) :seed (s/? ::sample.seed)))
-(s/def ::from.table     (s/cat :op #{'table `table} :table ::ident :only? (s/? #{'only `only})
-                               :as (s/? (s/cat :op #{'as `as} :name ::ident-atom :col-aliases (s/? ::column-aliases)))
+(s/def ::sample.seed    (s/cat :op (named seed) :val number?))
+(s/def ::sample         (s/cat :op (named sample) :method symbol?
+                               :args ::sample.args :seed (s/? ::sample.seed)))
+(defmethod build ::sample [_ {:keys [method args seed]} st]
+  (let [args (str/join "," args)
+        seed (if seed (str " repeatable " seed) "")]
+    [(str method "(" args ")" seed) st]))
+
+;;; FROM table_name ( ONLY ) ? ( AS alias ( column_alias+ ) ? ) ? ( tablesample_clause ) ?
+
+(s/def ::from.table     (s/cat :op (named table) :table ::ident :only? (s/? (named only))
+                               :as (s/? ::alias+cols?)
                                :sample (s/? ::sample)))
-(s/def ::from.with      (s/cat :op #{'with `with} :query ::ident-atom
-                               :as (s/? (s/cat :op #{'as `as} :name ::ident-atom  :col-aliases (s/? ::column-aliases)))))
-(s/def ::from.select    (s/cat :op #{'select `select} :lateral (s/? #{'lateral `lateral}) :query map?
-                               :as (s/? (s/cat :op #{'as `as} :name ::ident-atom :col-aliases (s/? ::column-aliases)))))
-(s/def ::from.funcall   (s/cat :op #{'funcall `funcall} :with-ordinality (s/? #{'with-ordinality `with-ordinality})
+(defmethod build ::from.table [_ {:keys [table only? as sample]} st]
+  (let [only (if only? " only " " ")
+        [as st1] (if as (build ::as as st) ["" st])
+        [sample st2] (if sample (build ::sample sample st1) ["" st1])]
+    [(str table only as sample) st2]))
+
+;;; FROM with_query_name ( AS alias ( column_alias+ ) ? ) ?
+
+(s/def ::from.with      (s/cat :op (named with) :query ::ident-atom :as (s/? ::alias+cols?)))
+
+;;; FROM ( LATERAL ) ? select_query ( AS alias ( column_alias+ ) ? ) ?
+
+(s/def ::from.select    (s/cat :op (named select) :lateral (s/? (named lateral)) :query ::select-query
+                               :as (s/? ::alias+cols?)))
+
+;;; FROM ( LATERAL ) ? function_name ( arg* ) ( WITH ORDINALITY ) ? ( AS alias ( column_alias+) ? ) ?
+
+(s/def ::from.funcall   (s/cat :op (named funcall) :lateral (s/? (named lateral))
+                               :with-ordinality (s/? (named with-ordinality))
                                :fun ::identy :args (s/coll-of ::expr :kind vector?)
-                               :as (s/? (s/cat :op #{'as `as} :name ::ident-atom :col-aliases (s/? ::column-aliases)))))
-(s/def ::from.join.on (s/cat :op #{'on `on} :expr ::expr))
-(s/def ::from.join.using (s/cat :op #{'using `using} :cols (s/+ ::ident-atom)))
-(s/def ::from.join (s/cat :op #{'join `join} :direction #{'left `left 'right `right 'cross `cross 'full `full}
+                               :as (s/? ::alias+cols?)))
+
+;;; FROM from_item join_type JOIN from_item 
+
+(s/def ::from.join.on (s/cat :op (named on) :expr ::expr))
+(s/def ::from.join.using (s/cat :op (named using) :cols (s/+ ::ident-atom)))
+(s/def ::from.join (s/cat :op (named join) :direction (named left right cross full)
                           :left ::from :right ::from
                           :cond (s/? (s/or :on ::from.join.on :using ::from.join.using))))
-(s/def ::from (s/or :ident ::ident :table ::from.table :with ::from.with :select ::from.select
-                    :funcall ::from.funcall :join ::from.join))
+(s/def ::from (s/or :ident ::ident :table ::from.table :with ::from.with
+                    :select ::from.select :funcall ::from.funcall :join ::from.join))
+
 ;; do these later, they're not used much
 ;; (s/def ::from.fundef    )
 ;; variation 5: function_name ( [ argument [, ...] ] ) AS [ alias ] ( column_definition [, ...] )
@@ -481,71 +423,67 @@
 ;;   keys:
 ;;     :rows-from LIST
 
-
-;;; windows
+;;; WINDOW ( window_name AS ( window_definition ) ) +
 ;;; we don't track enough information to enforce the validity of window clauses
 ;;; for example, if you define a window with a partition clause, then base a new
 ;;; one on that existing one and give it a partition clause, it will error
 ;;; we do however check start and end frame clauses properly
 
-(def simple-frame? '#{current-row all-before all-after})
-(defn vector-frame? [v]
-  (when (vector? v)
-    (let [[a b] v]
-      (and (integer? a) (pos? a)
-           ('#{before after} b)))))
+(s/def ::window.existing     (s/cat :op (named based-on) :id ::ident))
+(s/def ::window.partition    (s/cat :op (named partition-by) :exprs (s/+ ::expr)))
 
-(def frame? (some-fn simple-frame? vector-frame?))
+;;; ROWS ( CURRENT ROW | ( UNBOUNDED | count ) ( PRECEDING | FOLLOWING ) )
 
-(s/def ::window.existing    (s/cat :op '#{based-on} :id ::ident))
-(s/def ::window.partition   (s/cat :op '#{partition-by} :exprs (s/+ any?)))
-(s/def ::window.frame.any   frame?)
-(s/def ::window.frame.start (s/and ::window.frame.any #(not= 'all-after  %)))
-(s/def ::window.frame.end   (s/and ::window.frame.any #(not= 'all-before %)))
-(s/def ::window.frame       (s/cat :op '#{frame} :start ::window.frame.start
-                                   :end (s/? ::window.frame.end)))
+(s/def ::window.frame.simple (named current-row unbounded-preceding unbounded-following))
+(defmethod build ::window.frame.simple [_ v st] [(u/undashed-name v) st])
+
+(s/def ::window.frame.vector (s/cat :count (s/and integer? pos?) :marker (named preceding following)))
+(defmethod build ::window.frame.vector [_ {:keys [count marker]} st] [(str count " " marker) st])
+
+(s/def ::window.frame.any    (some-spec ::window.frame.simple ::window.frame.vector))
+
+;;; ROWS ( frame_start | BETWEEN frame_start AND frame_end )
+
+(s/def ::window.frame.start  (s/and ::window.frame.any (u/name-not= "unbounded-following")))
+(s/def ::window.frame.end    (s/and ::window.frame.any (u/name-not= "unbounded-preceding")))
+(s/def ::window.frame        (s/cat :op (named frame) :start ::window.frame.start :end (s/? ::window.frame.end)))
+
+(defmethod build ::window.frame [_ {:keys [start end]} st]
+  (let [[s st1] (build-some start st)]
+    (if (seq end)
+      (let [[e st2] (build-some end st1)]
+        [(str "rows between " s " and " e) st2])
+      (u/prefix "rows " (build-some start st)))))
+
+;;; WINDOW ( window_name AS ( window_definition ) ) +
+
 (s/def ::window.item (s/cat :existing     (s/? ::window.existing)
                             :partition-by (s/? ::window.partition)
                             :order-by     (s/? ::order-by)
                             :frame        (s/? ::window.frame)))
-
-(defmethod build ::window.frame.any [_ v st]
-  (cond (symbol? v) (case v
-                      current-row ["current row" st]
-                      all-before  ["unbounded preceding" st]
-                      all-after   ["unbounded following" st]
-                      (u/fatal "unrecognised window frame symbol" {:got v}))
-        (empty? v) ["" st]
-        :else (let [[c p] v]
-                (cond (not (integer? c)) (u/fatal "expected integer row count" {:got c})
-                      (= 'before p)      [(str c " preceding") st]
-                      (= 'after  p)      [(str c " following") st]
-                      :else (u/fatal "expected 'before or 'after" {:got p})))))
-
-
-(defmethod build ::window.frame [_ v st]
-  (let [{start 'start end 'end} (ss/conform! ::window.frame v)
-        [s st1] (build ::window.frame.any start st)
-        [e st2] (build ::window.frame.any end st1)]
-    (if (empty? end)
-      [(str "rows " s) st2]
-      [(str "rows between " s " and " e) st2])))
-    
-(defmethod build ::window.item [_ v st]
-  (let [{:keys [existing partition-by order-by frame]} (ss/conform! ::window.item v)
-        e (if existing (u/render-ident (:id existing)) "")
+(defmethod build ::window.item [_ {:keys [existing partition-by order-by frame]} st]
+  (let [e (if existing (u/render-ident (:id existing)) "")
         [p st1] (if (not partition-by) ["" st]
-                    (update (join-build ::expr (:exprs partition-by) st ", ") 0 #(str "partition by " %)))
+                    (u/prefix "partition by" (update (comma-some (:exprs partition-by) st))))
         [o st2] (if order-by (build ::order-by order-by st1) ["" st1])
         [f st3] (build ::window.frame frame st2)]
     [(str/join " " (filter #(not= "" %) [e p o f]))
      st3]))
 
-(defmethod build ::window [_ v st]
-  (if (empty? v) ["" st]
-    (update (join-build ::window.item v st ", ") 0 #(str "window " %))))
+(s/def ::window (s/coll-of ::window.item :into []))
+(defmethod build ::window [_ v st] (u/prefix "window" (comma-some v st)))
 
-(defmethod build-query 'select
+;;; Queries
+
+(s/def ::verb       #{:select :insert :update :delete :table :values})
+
+;;; SELECT
+
+(s/def ::select-query (s/keys :req-un [::verb ::select]
+                              :opt-un [::with ::distinct ::from ::where ::window
+                                       ::set-op ::group-by ::order-by ::limit ::for]))
+
+(defmethod build ::select-query
   [{{:keys [with distinct select from where group-by having
             window set-op order-by limit offset]
      for* :for}
@@ -570,15 +508,36 @@
                 ])]
     [(str/join " " q-bits) st13]))
 
-;; (s/def ::only (s/cat :only #{:only} :id ::id))
+;;; INSERT
 
-;; (s/def ::from.table-item (s/or :alias ::alias :tabular-alias ::tabular-alias :id ::id))
-;; (s/def ::from.table (s/or :table-item ::from.table-item
-;;                           :only (s/cat :only (s/? #{:only}) :table-item ::from.table-item)))
+(s/def ::insert-query (s/keys :req-un [::verb]))
 
-;; ;; (s/def ::from-1 ...)
-;; ;; (s/def ::from-2 ...)
-;; ;; (s/def ::from-3 ...)
-;; ;; (s/def ::from-4 ...)
+;;; UPDATE
 
-  
+(s/def ::update-query (s/keys :req-un [::verb]))
+
+;;; DELETE
+
+(s/def ::delete-query (s/keys :req-un [::verb]))
+
+;;; TABLE table
+
+(s/def ::table ::ident)
+(s/def ::table-query  (s/keys :req-un [::verb ::table]))
+(defmethod build ::table-query [_ {:keys [table]} st]
+  [(str "table " (u/render-ident table)) st])
+
+;;; VALUES ( expr+ )
+
+(s/def ::values (s/coll-of ::expr :into []))
+(s/def ::values-query (s/keys :req-un [::verb ::values]))
+(defmethod build ::values-query [_ {:keys [values]} st]
+  (u/prefix "values" (paren-comma-some values st)))
+
+(s/def ::with-query (some-spec ::select-query ::insert-query ::update-query
+                               ::delete-query ::table-query  ::values-query))
+(defmethod build ::with-query [_ v st] (build-some v st))
+
+(defn generate [spec val st]
+  (build spec (ss/conform! spec val) st))
+

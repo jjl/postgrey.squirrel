@@ -3,7 +3,7 @@
   :version "0.1.0"
   :resource-paths #{"src"}
   :source-paths #{"src"}
-  :dependencies '[[org.clojure/clojure    "1.9.0-alpha10" :scope "provided"]
+  :dependencies '[[org.clojure/clojure    "1.9.0-alpha13" :scope "provided"]
                   [org.clojure/core.match "0.3.0-alpha4"]
                   [org.flatland/ordered   "1.5.4"]
                   [com.rpl/specter        "0.13.0"]
