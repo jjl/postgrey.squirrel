@@ -144,7 +144,6 @@
 
 (def fny? (some-fn ifn? symbol?))
 
-
 ;; match macros
 
 ;; (defmacro match-> [expr & clauses]

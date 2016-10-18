@@ -62,8 +62,15 @@
 ;; (clojure.pprint/pprint (s/exercise ::select-query))
 ;; (s/exercise ::select-query)
 (defmacro named [& names]
+  (when-not (and (seq names)
+                 (every symbol? names))
+    (throw (ex-info "named expects symbols as arguments" {:got names})))
   (into #{} (mapcat (fn [v] `['~v '~(symbol "postgrey.sql" (name v))])) names))
+
 (defmacro some-spec [& ss]
+  (when-not (and (seq names)
+                 (every keyword? names))
+    (throw (ex-info "some-spec expects symbols as arguments" {:got names})))
   `(s/or ~@(mapcat (fn [v] [v v]) ss)))
 
 ;;; needed for state
