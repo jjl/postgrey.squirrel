@@ -26,11 +26,10 @@
 (defn binding-symbol? [s]
   (and (symbol? s)
        (not= '? s)
-       (not (namespace s))
        (.startsWith ^String (name s) "?")))
 
 (defn make-binding-symbol [s]
-  (symbol (str "?" (name s))))
+  (symbol nil (str "?" (name s))))
 
 ;; namespaces
 
@@ -90,6 +89,11 @@
     [ns  s] (->> (conj (str/split ns #"\.") (name v))
                  (into [] (comp (filter #(not= "" %)) (map #(render-string % \"))))
                  (str/join "."))))
+
+(defn wildcard? [k]
+  (and (keyword? k)
+       (= "*" (name k))
+       (not (re-find #"^(?:\.+|.*\.\..*)$" (or (namespace k) "")))))
 
 (defn render-wildcard
   "Renders a wildcard keyword using the namespace

@@ -24,6 +24,13 @@
   (is (u/has-name? :a))
   (is (not (u/has-name? (keyword "a" "")))))
 
+(deftest wildcard?
+  (doseq [good [:foo/* :foo.bar/*]]
+    (testing good
+      (is (u/wildcard? good))))
+  (doseq [bad [:./* :../* :a..b/*]]
+    (is (not (u/wildcard? bad)))))
+
 (deftest boilerplate
   (is (= ["a b" 1]    (u/prefix "a" ["b" 1])))
   (is (= ["(a)" 1]    (u/bracket ["a" 1])))

@@ -1,10 +1,19 @@
 (ns postgrey.sql-test
-  (:require [postgrey.sql :as sql]
+  (:require [clojure.core.match #?(:clj :refer :cljs :refer-macros) [match]]
+            [clojure.string :as str]
             [clojure.spec :as s :include-macros true]
+            [clojure.spec.test :as st]
+            [postgrey.sql :as sql]
    #?(:clj  [clojure.test :refer [deftest testing is]]
-      :cljs [cljs.test :refer-macros [deftest testing is]])))
+      :cljs [cljs.test :refer-macros [deftest testing is]]))
+  (:refer-clojure :exclude [distinct group-by]))
 
 (def emp (sql/new-state))
+
+(def exercise-count 10)
+
+(defn exercise [spec]
+  (s/exercise spec exercise-count))
 
 (deftest state-tests
   (let [st (sql/try-place '?foo emp)]
@@ -22,7 +31,7 @@
   (is (= [123 2] (sql/build ::mock 123 1)))
   (is (= [[123 456] 2] (sql/map-build  ::mock [123 456] 0)))
   (is (= ["123 456" 2] (sql/join-build ::mock [123 456] 0 \space)))
-  (is (= [123 2] (sql/build-some [::mock 123] 1)))
+  (is (= [123 2]       (sql/build-some [::mock 123] 1)))
   (is (= [[123 456] 2] (sql/map-some [[::mock 123] [::mock 456]] 0)))
   (is (= ["123 456" 2] (sql/join-some [[::mock 123] [::mock 456]] 0 \space))))  
 
@@ -40,165 +49,119 @@
   (is (= ["(1,2,3)" 3] (sql/paren-comma-some [[::mock 1] [::mock 2] [::mock 3]] 0)))
   (is (= ["(1 2 3)" 3] (sql/paren-space-some [[::mock 1] [::mock 2] [::mock 3]] 0))))
 
-;; (t/deftest records
-;;   (let [l  (s/lit "foo")
-;;         p1 (s/hold "place")
-;;         p2 (s/? "place")]
-;;     (t/is (every? true? [(s/literal? l) (s/placeholder? p1) (s/placeholder? p2)]))
-;;     (doseq [f [s/literal? s/placeholder?]]
-;;       (t/testing f
-;;         (t/is (every? false? (map f ["foo" 123 1.23 [] {}])))))
-;;     (t/is (= "foo"   (:val l)))
-;;     (t/is (= "place" (:name p1) (:name p2)))))
+(deftest null
+  (testing :null
+    (doseq [[i o] (exercise ::sql/nil)]
+      (is (= nil i o) "everything is nil"))
+    (let [[r st] (sql/build ::sql/nil nil emp)]
+      (is (= "null" r))
+      (is (= st emp) "state is unmodified"))))
+  
+(deftest basics
+  (doseq [t [::sql/int ::sql/bool ::sql/float]]
+    (testing t
+      (doseq [[i o] (exercise t)]
+        (testing i
+          (let [[r st] (sql/build t i emp)]
+            (is (= i o) "conformed output should equal input")
+            (is (= (str o) r) "build just stringifies")
+            (is (= st emp) "output state should equal input state")))))))
 
-;; (t/deftest a-simple
-;;   (let [e-keys #{:error :item :source}
-;;         f1 (s/a-simple :a emp)
-;;         f2 (s/a-simple ::foo :a emp)]
-;;     (t-error f1 "Invalid simple item" ::s/a-simple e-keys)
-;;     (t-error f2 "Invalid simple item" ::foo e-keys)
-;;     (doseq [t [123 1.23 true false]]
-;;       (t/testing t
-;;         (let [r1 (s/a-simple t emp)
-;;               r2 (s/a-simple ::foo t emp)]
-;;           (doseq [r [r1 r2]]
-;;             (t-appends r [(str t)])
-;;             (t-good r)))))))
+(deftest string
+  (doseq [[i o] (exercise ::sql/string)]
+    (testing i
+      (let [[r st] (sql/build ::sql/string o emp)
+            r2 (str "'" (str/replace o "'" "''") "'")]
+        (is (= i o)    "conformed output should equal input")
+        (is (= r2 r)   "stringifies correctly")
+        (is (= st emp) "output state should equal input state")))))
 
-;; (t/deftest a-literal
-;;   (let [e-keys #{:error :literal :source}
-;;         f1 (s/a-literal :a emp)
-;;         f2 (s/a-literal ::foo :a emp)
-;;         f3 (s/a-literal (s/lit "") emp)
-;;         f4 (s/a-literal ::foo (s/lit "") emp)
-;;         r1 (s/a-literal (s/lit "foo") emp)
-;;         r2 (s/a-literal ::foo (s/lit "foo") emp)]
-;;     (t-error f1 "Expected literal" ::s/a-literal e-keys)
-;;     (t-error f2 "Expected literal" ::foo e-keys)
-;;     (t-error f3 "Empty literal" ::s/a-literal e-keys)
-;;     (t-error f4 "Empty literal" ::foo e-keys)
-;;     (doseq [r [r1 r2]]
-;;       (t-appends r ["foo"])
-;;       (t-good r))))
+(deftest ident
+  (doseq [[i o] (exercise ::sql/ident)]
+    (testing i
+      (let [[r st] (sql/build ::sql/ident o emp)]
+        (is (= i o)    "conformed output should equal input")
+        (is (not= "*" (name o)))
+        (is (re-find #"^(?:\"(?:[^\"]|\"\")+\"\.)*\"(?:[^\"]|\"\")+\"$" r)   "stringifies correctly")
+        (is (= st emp) "output state should equal input state")))))
 
-;; (t/deftest a-keyword-qualified
-;;   (let [e-msg "Invalid qualified keyword"
-;;         e-keys #{:error :keyword :source}]
-;;     (doseq [t [123 1.23 "a" [] {} () nil]]
-;;       (let [f1 (s/a-keyword-qualified t emp)
-;;             f2 (s/a-keyword-qualified ::foo t emp)]
-;;         (t-error f1 e-msg ::s/a-keyword-qualified e-keys)
-;;         (t-error f2 e-msg ::foo e-keys)))
-;;     (doseq [[t e] [[:a "\"a\""] [:a/b "\"a\".\"b\""] [:a.b/c "\"a\".\"b\".\"c\""] [:a.b/* "\"a\".\"b\".\"*\""]]]
-;;       (t/testing t
-;;         (let [r1 (s/a-keyword-qualified t emp)
-;;               r2 (s/a-keyword-qualified ::foo t emp)]
-;;           (doseq [r [r1 r2]]
-;;             (t-appends r [e])
-;;             (t-good r)))))))
+            
+(deftest ident-atom
+  (doseq [[i o] (exercise ::sql/ident-atom)]
+    (testing i
+      (let [[r st] (sql/build ::sql/ident-atom o emp)]
+        (is (= i o) "conformed output should equal input")
+        (is (re-find #"^\"(?:[^\"]|\"\")+\"$" r) "stringifies correctly")
+        (is (= st emp) "output state should equal input state")))))
 
-;; (t/deftest a-keyword-wildcard
-;;   (let [e-msg "Invalid qualified keyword"
-;;         e-keys #{:error :keyword :source}]
-;;     (doseq [t [123 1.23 "a" [] {} () nil]]
-;;       (t/testing t
-;;         (let [f1 (s/a-keyword-wildcard t emp)
-;;               f2 (s/a-keyword-wildcard ::foo t emp)]
-;;           (t-error f1 e-msg ::s/a-keyword-wildcard e-keys)
-;;           (t-error f2 e-msg ::foo e-keys))))
-;;     (doseq [[t e] [[:a "\"a\""] [:a/b "\"a\".\"b\""] [:a.b/c "\"a\".\"b\".\"c\""] [:a.b/* "\"a\".\"b\".*"]]]
-;;       (t/testing t
-;;         (let [r1 (s/a-keyword-wildcard t emp)
-;;               r2 (s/a-keyword-wildcard ::foo t emp)]
-;;           (doseq [r [r1 r2]]
-;;             (t-appends r [e])
-;;             (t-good r)))))))
+(deftest nonbinding
+  (doseq [[i o] (exercise ::sql/nonbinding)]
+    (testing i
+      (let [[r st] (sql/build ::sql/nonbinding o emp)]
+        (is (= i o) "conformed output should equal input")
+        (is (= (name o) r) "build is name")
+        (is (= st emp) "output state should equal input state")))))
 
-;; (t/deftest a-ident-string
-;;   (let [e-msg "Invalid identifier string"
-;;         e-keys #{:error :ident :source}
-;;         r1 (s/a-ident-string "a.b\"/c" emp)
-;;         r2 (s/a-ident-string ::foo "a.b\"/c" emp)]
-;;     (doseq [t [123 1.23 :a/b [] {} () nil]]
-;;       (t/testing t
-;;         (let [f1 (s/a-ident-string t emp)
-;;               f2 (s/a-ident-string ::foo t emp)]
-;;           (t-error f1 e-msg ::s/a-ident-string e-keys)
-;;           (t-error f2 e-msg ::foo e-keys))))
-;;     (doseq [r [r1 r2]]
-;;       (t-appends r ["\"a.b\"\"/c\""])
-;;       (t-good r))))
+(deftest identy
+  (doseq [[i [t o :as o2]] (exercise ::sql/identy)]
+    (testing i
+      (let [[r st] (sql/build ::sql/identy o2 emp)]
+        (is (#{::sql/ident ::sql/nonbinding} t))
+        (match o2
+          [::sql/ident id]
+          (is (re-find #"^(?:\"(?:[^\"]|\"\")+\"\.)*\"(?:[^\"]|\"\")+\"$" r)   "stringifies correctly")
+          
+          [::sql/nonbinding n]
+          (is (= (name o) r)))))))
 
-;; (t/deftest a-symbol
-;;   (let [e-msg "Invalid symbol"
-;;         e-keys #{:error :symbol :source :valid}]
-;;     (doseq [t [123 1.23 :a/b [] {} () nil]]
-;;       (t/testing t
-;;         (let [f1 (s/a-symbol t emp)
-;;               f2 (s/a-symbol ::foo t emp)]
-;;           (t-error f1 e-msg ::s/a-symbol e-keys)
-;;           (t-error f2 e-msg ::foo e-keys))))
-;;     (doseq [t ['ba.r-baz 'foo/ba.r-baz]]
-;;       (let [r1 (s/a-symbol t emp)
-;;             r2 (s/a-symbol ::foo t emp)]
-;;         (doseq [r [r1 r2]]
-;;           (t-appends r ["bar_baz"])
-;;           (t-good r))))))
+(deftest wild-kw
+  (doseq [[i o] (exercise ::sql/wild-kw)]
+    (testing i
+      (let [[r st] (sql/build ::sql/wild-kw o emp)]
+        (is (= i o)    "conformed output should equal input")
+        (is (= "*" (name o)))
+        (is (re-find #"^(?:\"(?:[^\"]|\"\")+\"\.)*\*$" r)   "stringifies correctly")
+        (is (= st emp) "output state should equal input state")))))
 
-;; (t/deftest a-keyword-unqualified
-;;   (let [e-keys #{:error :source :keyword}
-;;         e-msg "Expected keyword without namespace"
-;;         r1 (s/a-keyword-unqualified :foo emp)]
-;;     (doseq [t [:foo/bar "a" 'a 123 1.23 {} [] ()]]
-;;       (t/testing t
-;;         (t-error (s/a-keyword-unqualified t emp) e-msg ::s/a-keyword-unqualified e-keys)
-;;         (t-error (s/a-keyword-unqualified ::foo t emp) e-msg ::foo e-keys)))
-;; <    (t-appends r1 ["\"foo\""])))
+(deftest literal
+  (doseq [[i o] (exercise ::sql/literal)]
+    (testing i
+      (let [[r st] (sql/build ::sql/literal o emp)]
+        (is (= (:literal o) r) "output should be the literal value")
+        (is (= st emp) "output state should equal input state")))))
 
-;; (t/deftest a-ident-atomic
-;;   (let [e-keys #{:error :identifier :source :valid}
-;;         e-msg "Invalid identifier atom"
-;;         r (reduce #(s/a-ident-atomic %2 %1) emp [(s/lit "foo") "bar" :baz 'quux])]
-;;     (with-redefs [s/a-literal (constantly ::foo)
-;;                   s/a-ident-string (constantly ::foo)
-;;                   s/a-keyword-unqualified (constantly ::foo)]
-;;       (doseq [i [(s/lit "") "" :foo]]
-;;         (t/testing i
-;;           (t/is (= ::foo (s/a-ident-atomic i emp))))))
-;;     (t/is (t-good r))
-;;     (t-appends r ["foo" "\"bar\"" "\"baz\"" "quux"])
-;;     (doseq [t [123 1.23 [] {} () nil :foo/bar 'a/b]]
-;;       (t/testing t
-;;         (let [f1 (s/a-ident-atomic t emp)
-;;               f2 (s/a-ident-atomic ::foo t emp)]
-;;           (t-error f1 e-msg ::s/a-ident-atomic e-keys)
-;;           (t-error f2 e-msg ::foo e-keys))))))
-
-;; (t/deftest a-ident-qualified ;;don't forgot to add back into a-ident tests
-;;   )
-
-;; (t/deftest a-ident
-;;   (let [e-keys #{:error :identifier :source :valid}
-;;         e-msg "Invalid identifier"
-;;         r (reduce #(s/a-ident %2 %1) emp [(s/lit "foo.bar") "bar/baz" :baz/quux 'quux])]
-;;     (with-redefs [s/a-literal (constantly ::foo)
-;;                   s/a-ident-string (constantly ::foo)
-;;                   s/a-keyword-qualified (constantly ::foo)]
-;;       (doseq [i [(s/lit "") "" :foo]]
-;;         (t/testing i
-;;           (t/is (= ::foo (s/a-ident i emp))))))
-;;     (t/is (t-good r))
-;;     (t-appends r ["foo.bar" "\"bar/baz\"" "\"baz\".\"quux\"" "quux"])
-;;     (doseq [t [123 1.23 [] {} () nil 'baz/quux]]
-;;       (t/testing t
-;;         (let [f1 (s/a-ident t emp)
-;;               f2 (s/a-ident ::foo t emp)]
-;;           (t-error f1 e-msg ::s/a-ident e-keys)
-;;           (t-error f2 e-msg ::foo e-keys))))))
-
-
-;; ;; (t/deftest a-as
-;; ;;   (let [e-keys #{:error :valid :source :alias}
-;; ;;         e-msg "Invalid alias"
-
-;; ;; a-col-def
+(deftest free
+  (doseq [[i o] (exercise ::sql/free)]
+    (testing i
+      (let [{:keys [exprs]} o
+            [es end-st] (reduce (fn [[acc st] e]
+                                  (let [[r st] (sql/build-some e st)]
+                                    [(conj acc r) st]))
+                                [[] emp] exprs)
+            es2 (str "(" (str/join " " es) ")")
+            [r st] (sql/build ::sql/free o emp)]
+        (is (= es2 r) "stringifies correctly")
+        (is (= end-st st) "output state should contain the appropriate placeholders")))))
+    
+(deftest funcall)
+(deftest alias)
+(deftest expr)
+(deftest expr+)
+(deftest limit)
+(deftest offset)
+(deftest where)
+(deftest having)
+(deftest select)
+(deftest distinct)
+(deftest group-by)
+(deftest order)
+(deftest for*)
+(deftest set-op)
+(deftest with)
+(deftest sample)
+(deftest from)
+(deftest window)
+(deftest select-query)
+(deftest table-query)
+(deftest values-query)
+(deftest with-query)

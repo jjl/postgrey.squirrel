@@ -63,15 +63,15 @@
 ;; (s/exercise ::select-query)
 (defmacro named [& names]
   (when-not (and (seq names)
-                 (every symbol? names))
+                 (every? symbol? names))
     (throw (ex-info "named expects symbols as arguments" {:got names})))
   (into #{} (mapcat (fn [v] `['~v '~(symbol "postgrey.sql" (name v))])) names))
 
-(defmacro some-spec [& ss]
+(defmacro some-spec [& names]
   (when-not (and (seq names)
-                 (every keyword? names))
+                 (every? keyword? names))
     (throw (ex-info "some-spec expects symbols as arguments" {:got names})))
-  `(s/or ~@(mapcat (fn [v] [v v]) ss)))
+  `(s/or ~@(mapcat (fn [v] [v v]) names)))
 
 ;;; needed for state
 
@@ -79,7 +79,7 @@
                     #(g/fmap u/make-binding-symbol (g/symbol))))
 
 ;;; The state object simply contains a collection of bindings
-(s/def ::bindings (s/coll-of ::binding :kind u/ordered-set?))
+(s/def ::bindings (s/coll-of ::binding :kind u/ordered-set? :gen-max 3))
 (s/def ::state (s/keys :req-un [::bindings]))
 
 (defn new-state
@@ -143,7 +143,13 @@
   (update (map-build spec coll st) 0
           #(str/join sep %)))
 
-(defn build-some [[k v] st]
+(defn build-some
+  "Builds a conformed `some-spec`-based spec
+   args: [conformed state]
+     conformed: the result of conforming a value whose spec
+                is based on `some-spec`
+   returns: [string state]"
+  [[k v] st]
   (build k v st))
 
 (defn map-some [coll st]
@@ -192,6 +198,11 @@
 (s/def ::ident (s/and keyword? #(not= "*" (name %))))
 (defmethod build ::ident   [_ v st] [(u/render-ident v) st])
 
+;;; an ident-atom is a keyword with no namespace
+
+(s/def ::ident-atom  (s/with-gen (s/and ::ident u/no-ns?) g/keyword))
+(derive ::ident-atom ::ident) ;; free implementation!
+
 ;;; a nonbinding is a symbol whos name does not begin with '?'
 ;;; assuming it gets as far as printing, its name is printed as a string
 
@@ -203,15 +214,10 @@
 (s/def ::identy (some-spec ::ident ::nonbinding))
 (defmethod build ::identy  [_ v st] (build-some v st))
 
-;;; an ident-atom is a keyword with no namespace
-
-(s/def ::ident-atom  (s/with-gen (s/and ::ident u/no-ns?) g/keyword))
-(derive ::ident-atom ::ident) ;; free implementation!
-
 ;;; a wild keyword's name is '*' and it signifies a wildcard
 ;;; prefix expansion is done as per ::ident
 
-(s/def ::wild-kw (s/with-gen (s/and keyword? #(= "*" (name %)))
+(s/def ::wild-kw (s/with-gen (s/and keyword? u/wildcard?)
                    (fn [] (g/fmap #(keyword (name %) "*") (g/symbol)))))
 (defmethod build ::wild-kw [_ v st] [(u/render-wildcard v) st])
 
@@ -245,20 +251,20 @@
 ;;; expressions are many things. expr+ is an expression or an alias
 
 (s/def ::expr (some-spec ::int ::bool ::float ::string ::binding ::ident
-                         ::magic ::wild-kw ::funcall ::free ::literal))
+                         ::nonbinding ::wild-kw ::funcall ::free ::literal))
 (s/def ::expr+ (some-spec ::alias ::int ::bool ::float ::string ::binding ::ident
-                          ::magic ::wild-kw ::funcall ::free ::literal))
+                          ::nonbinding ::wild-kw ::funcall ::free ::literal))
 (defmethod build ::expr  [_ v st] (build-some v st))
 (defmethod build ::expr+ [_ v st] (build-some v st))
 
 ;;; LIMIT count
 
-(s/def ::limit  (s/and integer? pos?))
+(s/def ::limit  (s/int-in 1 Long/MAX_VALUE))
 (defmethod build ::limit [_ v st] [(u/prefix "limit"  (str v)) st])
 
 ;;; OFFSET count
 
-(s/def ::offset (s/and integer? pos?))
+(s/def ::offset (s/int-in 1 Long/MAX_VALUE))
 (defmethod build ::offset [_ v st] [(u/prefix "offset" (str v)) st])
 
 ;;; WHERE expr
@@ -444,7 +450,7 @@
 (s/def ::window.frame.simple (named current-row unbounded-preceding unbounded-following))
 (defmethod build ::window.frame.simple [_ v st] [(u/undashed-name v) st])
 
-(s/def ::window.frame.vector (s/cat :count (s/and integer? pos?) :marker (named preceding following)))
+(s/def ::window.frame.vector (s/cat :count (s/int-in 1 Long/MAX_VALUE) :marker (named preceding following)))
 (defmethod build ::window.frame.vector [_ {:keys [count marker]} st] [(str count " " marker) st])
 
 (s/def ::window.frame.any    (some-spec ::window.frame.simple ::window.frame.vector))
